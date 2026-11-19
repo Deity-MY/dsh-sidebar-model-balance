@@ -1,0 +1,3 @@
+- insert:
+    - id: sidebar-model-balance
+      name: '@local/sidebar-model-balance'

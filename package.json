@@ -1,0 +1,39 @@
+{
+  "name": "@local/sidebar-model-balance",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Shows the current session model and DeepSeek account balance above the sidebar footer.",
+  "engines": {
+    "dsh": ">=0.2.2-rc.5"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings-account",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-session"
+      ]
+    }
+  }
+}

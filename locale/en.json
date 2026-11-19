@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "title": "Sidebar model and balance",
+    "description": "Shows the model used by the current session and your DeepSeek account balance above the Settings and account controls at the sidebar foot. Expand the sidebar to see it; the collapsed icon rail hides the card. The balance reads DSH's account snapshot and combines the topped-up and bonus wallet for the primary currency. It makes no balance requests before the active session has a conversation; after that it requests a fresh balance every 60 seconds and once more 3 seconds after each turn ends. It reads Signed out when no account is connected. Turning the plugin off removes the card and keeps the rest of the sidebar unchanged."
+  },
+  "model": "Model",
+  "balance": "Balance",
+  "loading": "Loading",
+  "unavailable": "Unavailable",
+  "signedOut": "Signed out",
+  "label": "Current model and balance",
+  "summary": "Model {model}, balance {balance}"
+}
