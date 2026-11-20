@@ -8,6 +8,16 @@ window.__ModuleLoader__.load({
     const CONVERSATION_REFRESH_INTERVAL_MS = 60000;
     const TURN_END_REFRESH_DELAY_MS = 3000;
 
+    /*
+     * Balances the Host half reads for providers other than the DeepSeek
+     * account. The browser cannot call those endpoints directly, so the card
+     * asks the Host route that owns the API key.
+     */
+    const PROVIDER_BALANCE_URL = '/dsh-provider-balance';
+    const PROVIDER_CACHE_MS = 20000;
+    const isHostBalanceProvider = provider => typeof provider === 'string'
+      && provider.startsWith('moonshot');
+
     const EN = {
       model: 'Model',
       balance: 'Balance',
@@ -17,6 +27,7 @@ window.__ModuleLoader__.load({
       signedOut: 'Signed out',
       noSession: 'No session',
       providerAccount: 'DeepSeek Account',
+      noKey: 'No API key',
       label: 'Current model and balance',
       summary: 'Model {model}, balance {balance}',
     };
@@ -29,6 +40,7 @@ window.__ModuleLoader__.load({
       signedOut: '未登录',
       noSession: '无会话',
       providerAccount: 'DeepSeek 账号',
+      noKey: '未配置密钥',
       label: '当前模型与余额',
       summary: '当前模型 {model}，余额 {balance}',
     };
@@ -163,7 +175,8 @@ window.__ModuleLoader__.load({
     }
 
     function ModelBalanceCard({
-      wide, useSessions, directoryFor, sessionFor, accountStore, setConversationActive, requestBalance, t,
+      wide, useSessions, directoryFor, sessionFor, accountStore, providerBalanceStore,
+      setConversationActive, requestBalance, requestProviderBalance, t,
     }) {
       const sessionId = useSessions(state => {
         for (const id of state.ids) {
@@ -199,6 +212,20 @@ window.__ModuleLoader__.load({
       const model = React.useSyncExternalStore(subscribe, getSnapshot);
       const lifecycle = React.useSyncExternalStore(subscribeSession, getSessionSnapshot);
       const account = React.useSyncExternalStore(accountStore.subscribe, accountStore.getSnapshot);
+      const providerBalance = React.useSyncExternalStore(
+        providerBalanceStore.subscribe,
+        providerBalanceStore.getSnapshot,
+      );
+
+      // The provider the session uses now decides which balance the card
+      // shows: the DeepSeek account one, or the Host-served provider one.
+      const providerId = model?.pending?.provider ?? model?.current?.provider;
+      const providerMode = isHostBalanceProvider(providerId);
+      const providerIdRef = React.useRef(providerId);
+      providerIdRef.current = providerId;
+      React.useEffect(() => {
+        if (providerMode) requestProviderBalance(providerId);
+      }, [providerMode, providerId, requestProviderBalance]);
 
       React.useEffect(() => {
         setConversationActive(sessionId !== undefined && lifecycle?.blank === false);
@@ -214,11 +241,12 @@ window.__ModuleLoader__.load({
           || lifecycle?.running !== false) return;
         const timer = window.setTimeout(() => {
           requestBalance();
+          requestProviderBalance(providerIdRef.current, true);
         }, TURN_END_REFRESH_DELAY_MS);
         return () => {
           window.clearTimeout(timer);
         };
-      }, [lifecycle?.running, sessionId, requestBalance]);
+      }, [lifecycle?.running, sessionId, requestBalance, requestProviderBalance]);
 
       if (!wide) return null;
 
@@ -256,7 +284,25 @@ window.__ModuleLoader__.load({
       const balance = account?.details?.balance;
       let amount = '—';
       let balanceCaption = t('balance');
-      if (account?.failed === true) {
+      if (providerMode) {
+        const snapshot = providerBalance;
+        const value = snapshot.provider === providerId ? snapshot.value : undefined;
+        if (value === undefined) {
+          if (snapshot.status === 'error') {
+            balanceCaption = t('unavailable');
+          } else {
+            amount = '…';
+            balanceCaption = t('loading');
+          }
+        } else if (value.status === 'ready') {
+          amount = formatBalance(String(value.available), value.currency === 'CNY' ? '¥' : '$');
+          balanceCaption = Number(value.voucher) > 0 ? t('balanceWithBonus') : t('balance');
+        } else if (value.status === 'no-credential') {
+          balanceCaption = t('noKey');
+        } else {
+          balanceCaption = t('unavailable');
+        }
+      } else if (account?.failed === true) {
         balanceCaption = t('unavailable');
       } else if (view === undefined) {
         amount = '…';
@@ -382,6 +428,49 @@ window.__ModuleLoader__.load({
           });
         };
 
+        // Host-served provider balances. The Client never holds the API key: it
+        // asks this bundle's Host route, which resolves the stored key and calls
+        // the provider. A failed read keeps the last value on screen.
+        const providerStore = createStore({ provider: undefined, status: 'idle', value: undefined });
+        let providerRequest;
+        let providerFetchedAt = 0;
+        let providerFetchedId;
+        let activeProvider;
+        const requestProviderBalance = (providerId, force = false) => {
+          if (!isHostBalanceProvider(providerId)) return;
+          activeProvider = providerId;
+          if (providerRequest !== undefined) return;
+          const state = providerStore.getSnapshot();
+          if (!force
+            && providerFetchedId === providerId
+            && state.status === 'ready'
+            && Date.now() - providerFetchedAt < PROVIDER_CACHE_MS) return;
+          providerStore.set({
+            provider: providerId,
+            status: 'loading',
+            value: state.provider === providerId ? state.value : undefined,
+          });
+          providerRequest = fetch(
+            `${PROVIDER_BALANCE_URL}?provider=${encodeURIComponent(providerId)}`,
+            { headers: { accept: 'application/json' }, cache: 'no-store' },
+          ).then(response => {
+            if (!response.ok) throw new Error(`provider balance HTTP ${response.status}`);
+            return response.json();
+          }).then(value => {
+            providerFetchedId = providerId;
+            providerFetchedAt = Date.now();
+            providerStore.set({
+              provider: providerId,
+              status: value?.status === 'ready' ? 'ready' : 'error',
+              value,
+            });
+          }).catch(() => {
+            providerStore.set({ provider: providerId, status: 'error', value: undefined });
+          }).finally(() => {
+            providerRequest = undefined;
+          });
+        };
+
         let conversationTimer;
         const stopConversationPoll = () => {
           if (conversationTimer === undefined) return;
@@ -397,6 +486,7 @@ window.__ModuleLoader__.load({
           if (conversationTimer !== undefined) return;
           conversationTimer = window.setInterval(() => {
             requestBalance();
+            requestProviderBalance(activeProvider);
           }, CONVERSATION_REFRESH_INTERVAL_MS);
         };
 
@@ -474,6 +564,7 @@ window.__ModuleLoader__.load({
               pendingBalanceRefresh = false;
               requestBalance();
             }
+            requestProviderBalance(activeProvider);
           };
           document.addEventListener('visibilitychange', onVisibility);
           later(800);
@@ -512,7 +603,15 @@ window.__ModuleLoader__.load({
           order: -10,
           locale: NS,
           label: () => t('label'),
-          inject: () => ({ accountStore, directoryFor, sessionFor, setConversationActive, requestBalance }),
+          inject: () => ({
+            accountStore,
+            providerBalanceStore: providerStore,
+            directoryFor,
+            sessionFor,
+            setConversationActive,
+            requestBalance,
+            requestProviderBalance,
+          }),
         }, ModelBalanceCard));
       },
     };
